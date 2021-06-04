@@ -1,0 +1,49 @@
+# This is based on https://linuxhint.com/setup_git_http_server_docker/
+FROM ubuntu:18.04
+
+RUN apt update -qq  && apt install -qq -y git apache2 apache2-utils curl
+
+ARG K8S_VERSION=1.20.0
+ARG MINK_VERSION=0.21.1
+ARG TARGETARCH=arm64
+
+RUN curl -LO https://dl.k8s.io/release/v${K8S_VERSION}/bin/linux/${TARGETARCH}/kubectl && \
+    chmod +x ./kubectl && \
+    mv kubectl /usr/local/bin
+RUN curl -L https://github.com/mattmoor/mink/releases/download/v${MINK_VERSION}/mink_${MINK_VERSION}_Linux_${TARGETARCH}.tar.gz | tar xzf - mink_${MINK_VERSION}_Linux_${TARGETARCH}/mink && \
+    chmod +x ./mink_${MINK_VERSION}_Linux_${TARGETARCH}/mink && \
+    mv mink_${MINK_VERSION}_Linux_${TARGETARCH}/mink /usr/local/bin
+
+# Set up the bare git repo with our hook.
+RUN a2enmod env cgi alias rewrite
+RUN mkdir -p /var/www/git/minkoku.git
+RUN cd /var/www/git/minkoku.git && \
+    git init --bare && \
+    touch git-daemon-export-ok && \
+    cp hooks/post-update.sample hooks/post-update && \
+    git update-server-info
+COPY update   /var/www/git/minkoku.git/hooks
+RUN chown -Rfv www-data:www-data /var/www/git
+
+# TODO(mattmoor): auth via https://git-scm.com/book/en/v2/Git-on-the-Server-Smart-HTTP
+# Something like:
+#  htpasswd -bc /.htpasswd minkoku "$(cat /var/run/secrets/kubernetes.io/serviceaccount/token | sha256sum | cut -d' ' -f 1)"
+COPY git.conf /etc/apache2/sites-available/
+RUN a2dissite 000-default.conf
+RUN a2ensite git.conf
+
+RUN git config --system http.receivepack true && \
+    git config --system http.uploadpack true && \
+    git config --system advice.detachedHead false
+
+ENV APACHE_RUN_USER www-data
+ENV APACHE_RUN_GROUP www-data
+ENV APACHE_LOG_DIR /var/log/apache2
+ENV APACHE_LOCK_DIR /var/lock/apache2
+ENV APACHE_PID_FILE /var/run/apache2.pid
+
+# When we start up, put the K8s SA token's hash into our .htpasswd file, and then start apache.
+CMD /bin/bash -c "htpasswd -bc /var/www/.htpasswd minkoku `cat /var/run/secrets/kubernetes.io/serviceaccount/token | sha256sum | cut -d' ' -f 1` && /usr/sbin/apache2ctl -D FOREGROUND"
+
+# TODO(mattmoor): Make this run on 8080
+EXPOSE 80/tcp

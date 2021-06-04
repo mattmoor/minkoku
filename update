@@ -1,0 +1,15 @@
+#!/bin/sh
+
+refname="$1"
+newrev="$3"
+
+# Check out the repo into a temporary directory.
+WD=$(mktemp -d)
+git --work-tree="${WD}" --git-dir="${PWD}" checkout -f "${newrev}"
+cd "${WD}"
+
+# For some reason PassEnv HOME doesn't work in git.conf
+export HOME=/minkoku
+
+# ... and action!
+mink apply
